@@ -15,6 +15,22 @@ export async function createComment(postId: string, content: string) {
   if (error) {
     throw new Error(error.message);
   }
+
+  // After comment insert succeeds, create notification if post owner is different
+  const { data: post } = await supabase
+    .from("posts")
+    .select("user_id")
+    .eq("id", postId)
+    .single();
+
+  if (post && post.user_id !== user.id) {
+    await supabase.from("notifications").insert({
+      user_id: post.user_id, // receiver
+      actor_id: user.id, // who commented
+      post_id: postId,
+      type: "comment",
+    });
+  }
 }
 
 export async function fetchComments(postId: string): Promise<Comment[]> {

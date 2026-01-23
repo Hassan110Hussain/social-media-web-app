@@ -147,6 +147,6 @@ export type Notification = {
   postImageUrl?: string;
   commentContent?: string;
   timeAgo: string;
-  read: boolean;
+  is_read: boolean;
 };
 

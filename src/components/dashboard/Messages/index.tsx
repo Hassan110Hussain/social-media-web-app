@@ -3,58 +3,72 @@
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import type { ChatMessage, Chat } from "@/types/api";
-
-const initialChats: Chat[] = [
-  {
-    id: "chat-1",
-    name: "Design Studio",
-    handle: "@design.studio",
-    status: "online",
-    avatarUrl: "/avatars/1.png",
-    lastActive: "Now",
-    unread: 2,
-    messages: [
-      { id: "m-1", from: "them", text: "Pushed the latest layout to Figma.", time: "10:12" },
-      { id: "m-2", from: "you", text: "Looks great. Let's try a bolder CTA.", time: "10:18" },
-      { id: "m-3", from: "them", text: "On it. Also added a glow on hover.", time: "10:22" },
-    ],
-  },
-  {
-    id: "chat-2",
-    name: "Dev Daily",
-    handle: "@dev.daily",
-    status: "online",
-    avatarUrl: "/avatars/2.png",
-    lastActive: "5m ago",
-    unread: 0,
-    messages: [
-      { id: "m-4", from: "them", text: "API rate limits updated to 200rpm.", time: "09:40" },
-      { id: "m-5", from: "you", text: "Noted. Will sync docs.", time: "09:44" },
-    ],
-  },
-  {
-    id: "chat-3",
-    name: "Product Mindset",
-    handle: "@productmind",
-    status: "offline",
-    avatarUrl: "/avatars/3.png",
-    lastActive: "1h ago",
-    unread: 1,
-    messages: [
-      { id: "m-6", from: "them", text: "Need a hero copy variation for the launch.", time: "08:55" },
-    ],
-  },
-];
+import { fetchConversations, fetchConversationMessages, sendMessage as sendMessageToDb, markConversationAsRead } from "@/lib/messages";
+import ICONS from "@/components/assets/icons";
 
 const Messages = () => {
-  const [chats, setChats] = useState<Chat[]>(initialChats);
-  const [selectedId, setSelectedId] = useState<string>(initialChats[0]?.id || "");
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [messageInput, setMessageInput] = useState("");
   const [search, setSearch] = useState("");
+  const [isLoadingChats, setIsLoadingChats] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  // Load conversations on mount
+  useEffect(() => {
+    const loadConversations = async () => {
+      try {
+        setIsLoadingChats(true);
+        setError(null);
+        const conversations = await fetchConversations();
+        setChats(conversations);
+        if (conversations.length > 0 && !selectedId) {
+          setSelectedId(conversations[0].id);
+        }
+      } catch (err) {
+        console.error("Failed to load conversations:", err);
+        setError("Unable to load conversations. Please try again.");
+        setChats([]);
+      } finally {
+        setIsLoadingChats(false);
+      }
+    };
+
+    void loadConversations();
+  }, []);
+
+  // Load messages when a conversation is selected
   useEffect(() => {
     if (!selectedId) return;
-    setChats((current) => current.map((chat) => (chat.id === selectedId ? { ...chat, unread: 0 } : chat)));
+
+    const loadMessages = async () => {
+      try {
+        setIsLoadingMessages(true);
+        // Mark conversation as read
+        await markConversationAsRead(selectedId);
+        
+        // Fetch messages for this conversation
+        const messages = await fetchConversationMessages(selectedId);
+        
+        // Update the chat with messages
+        setChats((current) =>
+          current.map((chat) =>
+            chat.id === selectedId
+              ? { ...chat, messages, unread: 0 }
+              : chat
+          )
+        );
+      } catch (err) {
+        console.error("Failed to load messages:", err);
+        setError("Unable to load messages. Please try again.");
+      } finally {
+        setIsLoadingMessages(false);
+      }
+    };
+
+    void loadMessages();
   }, [selectedId]);
 
   const filteredChats = useMemo(() => {
@@ -64,28 +78,38 @@ const Messages = () => {
 
   const selectedChat = useMemo(() => chats.find((chat) => chat.id === selectedId) || filteredChats[0] || null, [chats, filteredChats, selectedId]);
 
-  const sendMessage = () => {
-    if (!selectedChat || !messageInput.trim()) return;
-    const nextMessage: ChatMessage = {
-      id: `local-${Date.now()}`,
-      from: "you",
-      text: messageInput.trim(),
-      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    };
+  const sendMessage = async () => {
+    if (!selectedChat || !messageInput.trim() || isSendingMessage) return;
 
-    setChats((current) =>
-      current.map((chat) =>
-        chat.id === selectedChat.id
-          ? {
-              ...chat,
-              unread: 0,
-              lastActive: "Now",
-              messages: [...chat.messages, nextMessage],
-            }
-          : chat
-      )
-    );
+    const messageText = messageInput.trim();
     setMessageInput("");
+    setIsSendingMessage(true);
+
+    try {
+      // Send message to database
+      const newMessage = await sendMessageToDb(selectedChat.id, messageText);
+
+      // Update the chat with the new message
+      setChats((current) =>
+        current.map((chat) =>
+          chat.id === selectedChat.id
+            ? {
+                ...chat,
+                unread: 0,
+                lastActive: "Now",
+                messages: [...chat.messages, newMessage],
+              }
+            : chat
+        )
+      );
+    } catch (err) {
+      console.error("Failed to send message:", err);
+      setError("Failed to send message. Please try again.");
+      // Restore the input on error
+      setMessageInput(messageText);
+    } finally {
+      setIsSendingMessage(false);
+    }
   };
 
   return (
@@ -101,32 +125,48 @@ const Messages = () => {
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search people or handles" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
           </div>
           <div className="mt-3 flex flex-1 flex-col gap-2 overflow-y-auto">
-            {filteredChats.map((chat) => {
-              const active = selectedChat?.id === chat.id;
-              return (
-                <button
-                  key={chat.id}
-                  type="button"
-                  onClick={() => setSelectedId(chat.id)}
-                  className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-left transition ${
-                    active ? "border-blue-200 bg-blue-50 text-blue-700 shadow-sm dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-100" : "border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700"
-                  }`}
-                >
-                  <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-slate-800">
-                    <Image src={chat.avatarUrl} alt={chat.name} fill className="object-cover" />
-                    <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white ${chat.status === "online" ? "bg-emerald-400" : "bg-slate-400"} dark:border-slate-900`} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold">{chat.name}</p>
-                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">{chat.handle} · {chat.lastActive}</p>
-                  </div>
-                  {chat.unread > 0 && <span className="rounded-full bg-rose-500 px-2 py-1 text-[11px] font-semibold text-white shadow-sm">{chat.unread}</span>}
-                </button>
-              );
-            })}
-            {filteredChats.length === 0 && <p className="p-3 text-xs text-slate-500 dark:text-slate-400">No conversations found.</p>}
+            {isLoadingChats ? (
+              <p className="p-3 text-xs text-slate-500 dark:text-slate-400">Loading conversations...</p>
+            ) : error ? (
+              <p className="p-3 text-xs text-rose-500 dark:text-rose-400">{error}</p>
+            ) : filteredChats.length === 0 ? (
+              <p className="p-3 text-xs text-slate-500 dark:text-slate-400">No conversations found. Start a conversation with someone!</p>
+            ) : (
+              filteredChats.map((chat) => {
+                const active = selectedChat?.id === chat.id;
+                return (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    onClick={() => setSelectedId(chat.id)}
+                    className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-left transition ${
+                      active ? "border-blue-200 bg-blue-50 text-blue-700 shadow-sm dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-100" : "border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700"
+                    }`}
+                  >
+                    <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-slate-800">
+                      <Image 
+                        src={chat.avatarUrl || ICONS.land} 
+                        alt={chat.name} 
+                        fill 
+                        className="object-cover"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = ICONS.land;
+                        }}
+                      />
+                      <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white ${chat.status === "online" ? "bg-emerald-400" : "bg-slate-400"} dark:border-slate-900`} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{chat.name}</p>
+                      <p className="truncate text-xs text-slate-500 dark:text-slate-400">{chat.handle} · {chat.lastActive}</p>
+                    </div>
+                    {chat.unread > 0 && <span className="rounded-full bg-rose-500 px-2 py-1 text-[11px] font-semibold text-white shadow-sm">{chat.unread}</span>}
+                  </button>
+                );
+              })
+            )}
           </div>
-          <button type="button" className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-[1px] hover:bg-slate-800 dark:bg-white dark:text-slate-900">
+          <button type="button" className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-px hover:bg-slate-800 dark:bg-white dark:text-slate-900">
             + New message
           </button>
         </aside>
@@ -135,9 +175,18 @@ const Messages = () => {
           {selectedChat ? (
             <>
               <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 text-sm dark:border-slate-800">
-                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3">
                   <div className="relative h-10 w-10 overflow-hidden rounded-full bg-slate-800">
-                    <Image src={selectedChat.avatarUrl} alt={selectedChat.name} fill className="object-cover" />
+                    <Image 
+                      src={selectedChat.avatarUrl || ICONS.land} 
+                      alt={selectedChat.name} 
+                      fill 
+                      className="object-cover"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.src = ICONS.land;
+                      }}
+                    />
                     <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white ${selectedChat.status === "online" ? "bg-emerald-400" : "bg-slate-400"} dark:border-slate-900`} />
                   </div>
                   <div>
@@ -156,19 +205,29 @@ const Messages = () => {
               </header>
 
               <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4 sm:px-6">
-                {selectedChat.messages.map((message) => {
-                  const mine = message.from === "you";
-                  return (
-                    <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
-                        mine ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
-                      }`}>
-                        <p>{message.text}</p>
-                        <p className={`mt-1 text-[11px] font-semibold ${mine ? "text-white/80" : "text-slate-500 dark:text-slate-400"}`}>{message.time}</p>
+                {isLoadingMessages ? (
+                  <div className="flex items-center justify-center py-8">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Loading messages...</p>
+                  </div>
+                ) : selectedChat.messages.length === 0 ? (
+                  <div className="flex items-center justify-center py-8">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">No messages yet. Start the conversation!</p>
+                  </div>
+                ) : (
+                  selectedChat.messages.map((message) => {
+                    const mine = message.from === "you";
+                    return (
+                      <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                        <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                          mine ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                        }`}>
+                          <p>{message.text}</p>
+                          <p className={`mt-1 text-[11px] font-semibold ${mine ? "text-white/80" : "text-slate-500 dark:text-slate-400"}`}>{message.time}</p>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
               <footer className="border-t border-slate-200 p-3 dark:border-slate-800 sm:p-4">
@@ -186,8 +245,13 @@ const Messages = () => {
                     placeholder="Type a message"
                     className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
                   />
-                  <button type="button" onClick={sendMessage} className="rounded-full bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-[1px] hover:bg-blue-500">
-                    Send
+                  <button 
+                    type="button" 
+                    onClick={sendMessage} 
+                    disabled={isSendingMessage || !messageInput.trim()}
+                    className="rounded-full bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-px hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+                  >
+                    {isSendingMessage ? "Sending..." : "Send"}
                   </button>
                 </div>
               </footer>

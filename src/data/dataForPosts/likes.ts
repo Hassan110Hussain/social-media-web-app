@@ -25,6 +25,22 @@ export async function likePost(postId: string) {
   if (error) {
     throw new Error(error.message);
   }
+
+  // After like insert succeeds, create notification if post owner is different
+  const { data: post } = await supabase
+    .from("posts")
+    .select("user_id")
+    .eq("id", postId)
+    .single();
+
+  if (post && post.user_id !== user.id) {
+    await supabase.from("notifications").insert({
+      user_id: post.user_id, // receiver
+      actor_id: user.id, // who liked
+      post_id: postId,
+      type: "like",
+    });
+  }
 }
 
 export async function unlikePost(postId: string) {

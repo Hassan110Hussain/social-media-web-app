@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { Notification, NotificationType } from "@/types/api";
 import ICONS from "@/components/assets/icons";
+import { fetchNotifications } from "@/lib/notifications";
 import { supabase } from "@/lib/supabase";
 
 const Notifications = () => {
@@ -18,64 +19,9 @@ const Notifications = () => {
         setIsLoading(true);
         setError(null);
 
-        // Get current user
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          setError("Please sign in to view notifications");
-          return;
-        }
-
-        // Fetch notifications from database
-        // For now, we'll create mock notifications as the database structure may not exist yet
-        // In a real app, you'd query a notifications table
-        const mockNotifications: Notification[] = [
-          {
-            id: "1",
-            type: "like",
-            userId: "user1",
-            userAvatar: ICONS.land,
-            userName: "Alex Johnson",
-            userHandle: "alexj",
-            postId: "post1",
-            timeAgo: "2m",
-            read: false,
-          },
-          {
-            id: "2",
-            type: "comment",
-            userId: "user2",
-            userAvatar: ICONS.land,
-            userName: "Sarah Chen",
-            userHandle: "sarahc",
-            postId: "post1",
-            commentContent: "Great post!",
-            timeAgo: "15m",
-            read: false,
-          },
-          {
-            id: "3",
-            type: "follow",
-            userId: "user3",
-            userAvatar: ICONS.land,
-            userName: "Mike Davis",
-            userHandle: "miked",
-            timeAgo: "1h",
-            read: true,
-          },
-          {
-            id: "4",
-            type: "share",
-            userId: "user4",
-            userAvatar: ICONS.land,
-            userName: "Emma Wilson",
-            userHandle: "emmaw",
-            postId: "post2",
-            timeAgo: "3h",
-            read: true,
-          },
-        ];
-
-        setNotifications(mockNotifications);
+        // Fetch real notifications from database
+        const fetchedNotifications = await fetchNotifications();
+        setNotifications(fetchedNotifications);
       } catch (err) {
         console.error("Failed to load notifications:", err);
         setError("Unable to load notifications right now. Please try again.");
@@ -134,15 +80,31 @@ const Notifications = () => {
   };
 
   const markAsRead = async (notificationId: string) => {
+    // Optimistic update
     setNotifications((current) =>
       current.map((notif) =>
-        notif.id === notificationId ? { ...notif, read: true } : notif
+        notif.id === notificationId ? { ...notif, is_read: true } : notif
       )
     );
-    // In a real app, you'd update the database here
+
+    // Update database
+    try {
+      await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("id", notificationId);
+    } catch (error) {
+      console.error("Failed to mark notification as read:", error);
+      // Revert optimistic update on error
+      setNotifications((current) =>
+        current.map((notif) =>
+          notif.id === notificationId ? { ...notif, is_read: false } : notif
+        )
+      );
+    }
   };
 
-  const unreadCount = notifications.filter((n) => !n.read).length;
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
 
   return (
     <div className="min-h-screen px-3 py-4 text-slate-900 transition-colors dark:text-white sm:px-4 sm:py-6 md:px-6 lg:px-8">
@@ -186,7 +148,7 @@ const Notifications = () => {
                 href={notification.postId ? `/home#post-${notification.postId}` : `/profile/${notification.userHandle}`}
                 onClick={() => markAsRead(notification.id)}
                 className={`group flex items-start gap-3 rounded-xl border px-4 py-3 transition hover:shadow-sm sm:px-5 sm:py-4 ${
-                  notification.read
+                  notification.is_read
                     ? "border-slate-200 bg-white/60 dark:border-slate-800 dark:bg-slate-900/40"
                     : "border-blue-200 bg-blue-50/50 shadow-sm shadow-blue-100/50 dark:border-blue-800/60 dark:bg-blue-950/30 dark:shadow-blue-900/20"
                 }`}
@@ -194,7 +156,7 @@ const Notifications = () => {
                 {/* Icon */}
                 <div
                   className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg transition ${
-                    notification.read
+                    notification.is_read
                       ? "bg-slate-100 dark:bg-slate-800"
                       : getNotificationColor(notification.type)
                   }`}
@@ -263,7 +225,7 @@ const Notifications = () => {
                 </div>
 
                 {/* Unread indicator */}
-                {!notification.read && (
+                {!notification.is_read && (
                   <div className="mt-2 h-2 w-2 shrink-0 rounded-full bg-blue-500" />
                 )}
               </Link>
