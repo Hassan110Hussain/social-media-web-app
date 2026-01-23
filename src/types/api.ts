@@ -9,6 +9,9 @@ export type Post = {
   liked: boolean;
   likes: number;
   comments: number;
+  shares: number;
+  shared: boolean;
+  saved: boolean;
   timeAgo: string;
   caption: string;
   following: boolean;
@@ -28,21 +31,6 @@ export type SuggestedProfile = {
 export type Message = { type: 'success' | 'error'; text: string } | null;
 
 // Dashboard component types
-export type Reel = {
-  id: string;
-  title: string;
-  creator: string;
-  category: string;
-  coverUrl: string;
-  duration: string;
-  likes: number;
-  comments: number;
-  saves: number;
-  views: number;
-  liked?: boolean;
-  saved?: boolean;
-};
-
 export type Board = {
   id: string;
   title: string;
@@ -112,7 +100,23 @@ export type SupabasePostRow = {
   users?: SupabaseUser[];
   likes?: SupabaseCountWrapper[] | null;
   comments?: SupabaseCountWrapper[] | null;
+  shares?: SupabaseCountWrapper[] | null;
   user_liked?: { id: string }[] | null;
+  user_shared?: { id: string }[] | null;
+  user_saved?: { id: string }[] | null;
+};
+
+// Comment types
+export type Comment = {
+  id: string;
+  content: string;
+  created_at: string;
+  post_id: string;
+  user_id: string;
+  users: {
+    username: string;
+    avatar_url: string | null;
+  };
 };
 
 // User profile types
@@ -127,5 +131,22 @@ export type UserProfile = {
   bio?: string | null;
   created_at?: string;
   updated_at?: string;
+};
+
+// Notification types
+export type NotificationType = 'like' | 'comment' | 'follow' | 'share';
+
+export type Notification = {
+  id: string;
+  type: NotificationType;
+  userId: string;
+  userAvatar: string;
+  userName: string;
+  userHandle: string;
+  postId?: string;
+  postImageUrl?: string;
+  commentContent?: string;
+  timeAgo: string;
+  read: boolean;
 };
 
