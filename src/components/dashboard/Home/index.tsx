@@ -2,21 +2,26 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FeedFilter, Post, SuggestedProfile } from "@/types/api";
-import { createPost, fetchForYouPosts, fetchFollowingPosts, uploadPostImage, toggleLikePost, toggleSharePost, toggleSavePost, deletePost, createComment, fetchComments } from "@/lib/posts";
+import { createPost, fetchForYouPosts, fetchFollowingPosts, fetchMyPosts, uploadPostImage, toggleLikePost, toggleSharePost, toggleSavePost, deletePost, createComment, fetchComments } from "@/lib/posts";
 import type { Comment } from "@/types/api";
 import { supabase } from "@/lib/supabase";
 import DeleteModal from "@/components/common/DeleteModal";
+import ScrollPaginationSentinel from "@/components/common/ScrollPagination";
 import ICONS from "@/components/assets/icons";
 import PostComposer from "./PostComposer";
 import FeedTabs from "./FeedTabs";
 import PostCard from "./PostCard";
 import SuggestedProfiles from "./SuggestedProfiles";
 
+const POSTS_PER_PAGE = 10;
+
 const Home = () => {
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("for-you");
   const [posts, setPosts] = useState<Post[]>([]);
   const [profiles, setProfiles] = useState<SuggestedProfile[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState<boolean>(false);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [hasMore, setHasMore] = useState<boolean>(true);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [composerContent, setComposerContent] = useState<string>("");
   const [isCreatingPost, setIsCreatingPost] = useState<boolean>(false);
@@ -33,26 +38,33 @@ const Home = () => {
   const [isLoadingComments, setIsLoadingComments] = useState<Record<string, boolean>>({});
   const [isSubmittingComment, setIsSubmittingComment] = useState<Record<string, boolean>>({});
 
+  // Load initial posts when filter changes
   useEffect(() => {
     const loadPosts = async () => {
       try {
         setIsLoadingPosts(true);
         setPostsError(null);
+        setHasMore(true);
 
-        // Fetch posts based on selected filter
+        // Fetch first page of posts based on selected filter
         let feedPosts: Post[];
         if (feedFilter === "following") {
-          feedPosts = await fetchFollowingPosts();
+          feedPosts = await fetchFollowingPosts(POSTS_PER_PAGE, 0);
+        } else if (feedFilter === "my-feed") {
+          feedPosts = await fetchMyPosts(POSTS_PER_PAGE, 0);
         } else {
           // "for-you" tab
-          feedPosts = await fetchForYouPosts();
+          feedPosts = await fetchForYouPosts(POSTS_PER_PAGE, 0);
         }
         
         setPosts(feedPosts);
+        // If we got fewer posts than requested, there's no more to load
+        setHasMore(feedPosts.length === POSTS_PER_PAGE);
       } catch (error) {
         console.error("Failed to load posts:", error);
         setPostsError("Unable to load posts right now. Please try again.");
         setPosts([]);
+        setHasMore(false);
       } finally {
         setIsLoadingPosts(false);
       }
@@ -82,6 +94,39 @@ const Home = () => {
     void loadCurrentUserProfile();
   }, [feedFilter]);
 
+  // Load more posts when scrolling
+  const loadMorePosts = async () => {
+    if (isLoadingMore || !hasMore) return;
+
+    try {
+      setIsLoadingMore(true);
+      const currentOffset = posts.length;
+
+      // Fetch next page of posts
+      let newPosts: Post[];
+      if (feedFilter === "following") {
+        newPosts = await fetchFollowingPosts(POSTS_PER_PAGE, currentOffset);
+      } else if (feedFilter === "my-feed") {
+        newPosts = await fetchMyPosts(POSTS_PER_PAGE, currentOffset);
+      } else {
+        newPosts = await fetchForYouPosts(POSTS_PER_PAGE, currentOffset);
+      }
+
+      if (newPosts.length === 0) {
+        setHasMore(false);
+      } else {
+        setPosts((prev) => [...prev, ...newPosts]);
+        // If we got fewer posts than requested, there's no more to load
+        setHasMore(newPosts.length === POSTS_PER_PAGE);
+      }
+    } catch (error) {
+      console.error("Failed to load more posts:", error);
+      setHasMore(false);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   // Posts are already filtered by the fetch functions, so we can use them directly
   const visiblePosts = posts;
 
@@ -102,11 +147,26 @@ const Home = () => {
 
     try {
       await toggleLikePost(postId);
-      // Refresh posts to get accurate like count and status
+      // Refresh current page to get accurate like count and status
+      const currentOffset = posts.findIndex(p => p.id === postId);
+      const pageStart = Math.floor(currentOffset / POSTS_PER_PAGE) * POSTS_PER_PAGE;
       const updatedPosts = feedFilter === "following" 
-        ? await fetchFollowingPosts() 
-        : await fetchForYouPosts();
-      setPosts(updatedPosts);
+        ? await fetchFollowingPosts(POSTS_PER_PAGE, pageStart)
+        : feedFilter === "my-feed"
+        ? await fetchMyPosts(POSTS_PER_PAGE, pageStart)
+        : await fetchForYouPosts(POSTS_PER_PAGE, pageStart);
+      
+      // Update only the current page of posts
+      setPosts((prev) => {
+        const newPosts = [...prev];
+        updatedPosts.forEach((updatedPost) => {
+          const index = newPosts.findIndex(p => p.id === updatedPost.id);
+          if (index !== -1) {
+            newPosts[index] = updatedPost;
+          }
+        });
+        return newPosts;
+      });
     } catch (error) {
       console.error("Failed to toggle like:", error);
       // Revert optimistic update on error
@@ -131,11 +191,26 @@ const Home = () => {
 
     try {
       await toggleSharePost(postId);
-      // Refresh posts to get accurate share count and status
+      // Refresh current page to get accurate share count and status
+      const currentOffset = posts.findIndex(p => p.id === postId);
+      const pageStart = Math.floor(currentOffset / POSTS_PER_PAGE) * POSTS_PER_PAGE;
       const updatedPosts = feedFilter === "following" 
-        ? await fetchFollowingPosts() 
-        : await fetchForYouPosts();
-      setPosts(updatedPosts);
+        ? await fetchFollowingPosts(POSTS_PER_PAGE, pageStart)
+        : feedFilter === "my-feed"
+        ? await fetchMyPosts(POSTS_PER_PAGE, pageStart)
+        : await fetchForYouPosts(POSTS_PER_PAGE, pageStart);
+      
+      // Update only the current page of posts
+      setPosts((prev) => {
+        const newPosts = [...prev];
+        updatedPosts.forEach((updatedPost) => {
+          const index = newPosts.findIndex(p => p.id === updatedPost.id);
+          if (index !== -1) {
+            newPosts[index] = updatedPost;
+          }
+        });
+        return newPosts;
+      });
     } catch (error) {
       console.error("Failed to toggle share:", error);
       // Revert optimistic update on error
@@ -154,11 +229,26 @@ const Home = () => {
 
     try {
       await toggleSavePost(postId);
-      // Refresh posts to get accurate saved status
+      // Refresh current page to get accurate saved status
+      const currentOffset = posts.findIndex(p => p.id === postId);
+      const pageStart = Math.floor(currentOffset / POSTS_PER_PAGE) * POSTS_PER_PAGE;
       const updatedPosts = feedFilter === "following" 
-        ? await fetchFollowingPosts() 
-        : await fetchForYouPosts();
-      setPosts(updatedPosts);
+        ? await fetchFollowingPosts(POSTS_PER_PAGE, pageStart)
+        : feedFilter === "my-feed"
+        ? await fetchMyPosts(POSTS_PER_PAGE, pageStart)
+        : await fetchForYouPosts(POSTS_PER_PAGE, pageStart);
+      
+      // Update only the current page of posts
+      setPosts((prev) => {
+        const newPosts = [...prev];
+        updatedPosts.forEach((updatedPost) => {
+          const index = newPosts.findIndex(p => p.id === updatedPost.id);
+          if (index !== -1) {
+            newPosts[index] = updatedPost;
+          }
+        });
+        return newPosts;
+      });
     } catch (error) {
       console.error("Failed to toggle save:", error);
       // Revert optimistic update on error
@@ -192,11 +282,14 @@ const Home = () => {
 
       await createPost({ content: trimmed, imageUrl });
 
-      // Refresh feed so the new post appears at the top
+      // Refresh first page to show new post
       const updatedPosts = feedFilter === "following" 
-        ? await fetchFollowingPosts() 
-        : await fetchForYouPosts();
+        ? await fetchFollowingPosts(POSTS_PER_PAGE, 0)
+        : feedFilter === "my-feed"
+        ? await fetchMyPosts(POSTS_PER_PAGE, 0)
+        : await fetchForYouPosts(POSTS_PER_PAGE, 0);
       setPosts(updatedPosts);
+      setHasMore(updatedPosts.length === POSTS_PER_PAGE);
 
       setComposerContent("");
       setSelectedFile(null);
@@ -281,11 +374,14 @@ const Home = () => {
       const updatedComments = await fetchComments(postId);
       setComments((prev) => ({ ...prev, [postId]: updatedComments }));
       
-      // Refresh posts to update comment count
-      const updatedPosts = feedFilter === "following" 
-        ? await fetchFollowingPosts() 
-        : await fetchForYouPosts();
-      setPosts(updatedPosts);
+      // Update comment count in the current post
+      setPosts((prev) =>
+        prev.map((post) =>
+          post.id === postId
+            ? { ...post, comments: post.comments + 1 }
+            : post
+        )
+      );
     } catch (error) {
       console.error("Failed to submit comment:", error);
     } finally {
@@ -359,28 +455,35 @@ const Home = () => {
                 </p>
               </div>
             ) : (
-              visiblePosts.map((post) => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  currentUserId={currentUserId}
-                  currentUserAvatar={currentUserAvatar}
-                  openMenuId={openMenuId}
-                  setOpenMenuId={setOpenMenuId}
-                  openCommentsPostId={openCommentsPostId}
-                  comments={comments[post.id] || []}
-                  commentInput={commentInputs[post.id] || ""}
-                  isLoadingComments={isLoadingComments[post.id] || false}
-                  isSubmittingComment={isSubmittingComment[post.id] || false}
-                  onDelete={openDeleteModal}
-                  onLike={toggleLike}
-                  onShare={toggleShare}
-                  onSave={toggleSave}
-                  onToggleComments={toggleComments}
-                  onCommentInputChange={handleCommentInputChange}
-                  onSubmitComment={handleSubmitComment}
+              <>
+                {visiblePosts.map((post) => (
+                  <PostCard
+                    key={post.id}
+                    post={post}
+                    currentUserId={currentUserId}
+                    currentUserAvatar={currentUserAvatar}
+                    openMenuId={openMenuId}
+                    setOpenMenuId={setOpenMenuId}
+                    openCommentsPostId={openCommentsPostId}
+                    comments={comments[post.id] || []}
+                    commentInput={commentInputs[post.id] || ""}
+                    isLoadingComments={isLoadingComments[post.id] || false}
+                    isSubmittingComment={isSubmittingComment[post.id] || false}
+                    onDelete={openDeleteModal}
+                    onLike={toggleLike}
+                    onShare={toggleShare}
+                    onSave={toggleSave}
+                    onToggleComments={toggleComments}
+                    onCommentInputChange={handleCommentInputChange}
+                    onSubmitComment={handleSubmitComment}
+                  />
+                ))}
+                <ScrollPaginationSentinel
+                  onLoadMore={loadMorePosts}
+                  hasMore={hasMore}
+                  isLoading={isLoadingMore}
                 />
-              ))
+              </>
             )}
           </section>
         </main>

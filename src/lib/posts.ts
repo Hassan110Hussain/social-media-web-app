@@ -8,6 +8,7 @@ export {
   fetchForYouPosts,
   fetchFollowingPosts,
   fetchExplorePosts,
+  fetchMyPosts,
   fetchUserPosts,
 } from "@/data/dataForPosts/fetch";
 

@@ -148,3 +148,23 @@ export async function getFollowerCount(userId: string): Promise<number> {
 
   return count ?? 0;
 }
+
+/**
+ * Get list of user IDs that the users you follow are following (2nd level)
+ * @param directFollowingIds - Array of user IDs that the current user directly follows
+ * @returns Array of user IDs (2nd level follows)
+ */
+export async function getSecondLevelFollowingIds(directFollowingIds: string[]): Promise<string[]> {
+  if (directFollowingIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("follows")
+    .select("following_id")
+    .in("follower_id", directFollowingIds);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return [...new Set(data?.map((row) => row.following_id) ?? [])];
+}

@@ -5,11 +5,16 @@ import Image from "next/image";
 import type { Post } from "@/types/api";
 import { fetchExplorePosts, toggleLikePost, toggleSavePost, createComment, fetchComments } from "@/lib/posts";
 import type { Comment } from "@/types/api";
+import ScrollPaginationSentinel from "@/components/common/ScrollPagination";
 import ICONS from "@/components/assets/icons";
+
+const POSTS_PER_PAGE = 12;
 
 const Explore = () => {
   const [posts, setPosts] = useState<Post[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [hasMore, setHasMore] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [openCommentsPostId, setOpenCommentsPostId] = useState<string | null>(null);
@@ -18,17 +23,21 @@ const Explore = () => {
   const [isLoadingComments, setIsLoadingComments] = useState<Record<string, boolean>>({});
   const [isSubmittingComment, setIsSubmittingComment] = useState<Record<string, boolean>>({});
 
+  // Load initial posts
   useEffect(() => {
     const loadPosts = async () => {
       try {
         setIsLoading(true);
         setError(null);
-        const explorePosts = await fetchExplorePosts();
+        setHasMore(true);
+        const explorePosts = await fetchExplorePosts(POSTS_PER_PAGE, 0);
         setPosts(explorePosts);
+        setHasMore(explorePosts.length === POSTS_PER_PAGE);
       } catch (err) {
         console.error("Failed to load explore posts:", err);
         setError("Unable to load posts right now. Please try again.");
         setPosts([]);
+        setHasMore(false);
       } finally {
         setIsLoading(false);
       }
@@ -36,6 +45,29 @@ const Explore = () => {
 
     void loadPosts();
   }, []);
+
+  // Load more posts when scrolling
+  const loadMorePosts = async () => {
+    if (isLoadingMore || !hasMore) return;
+
+    try {
+      setIsLoadingMore(true);
+      const currentOffset = posts.length;
+      const newPosts = await fetchExplorePosts(POSTS_PER_PAGE, currentOffset);
+
+      if (newPosts.length === 0) {
+        setHasMore(false);
+      } else {
+        setPosts((prev) => [...prev, ...newPosts]);
+        setHasMore(newPosts.length === POSTS_PER_PAGE);
+      }
+    } catch (error) {
+      console.error("Failed to load more posts:", error);
+      setHasMore(false);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     if (!search.trim()) return posts;
@@ -66,8 +98,8 @@ const Explore = () => {
 
     try {
       await toggleLikePost(postId);
-      const updatedPosts = await fetchExplorePosts();
-      setPosts(updatedPosts);
+      // Just update the specific post instead of refetching all
+      // The optimistic update is already applied
     } catch (error) {
       console.error("Failed to toggle like:", error);
       setPosts(previousPosts);
@@ -84,8 +116,8 @@ const Explore = () => {
 
     try {
       await toggleSavePost(postId);
-      const updatedPosts = await fetchExplorePosts();
-      setPosts(updatedPosts);
+      // Just update the specific post instead of refetching all
+      // The optimistic update is already applied
     } catch (error) {
       console.error("Failed to toggle save:", error);
       setPosts(previousPosts);
@@ -124,8 +156,14 @@ const Explore = () => {
       const updatedComments = await fetchComments(postId);
       setComments((prev) => ({ ...prev, [postId]: updatedComments }));
       
-      const updatedPosts = await fetchExplorePosts();
-      setPosts(updatedPosts);
+      // Update comment count in the current post
+      setPosts((prev) =>
+        prev.map((post) =>
+          post.id === postId
+            ? { ...post, comments: post.comments + 1 }
+            : post
+        )
+      );
     } catch (error) {
       console.error("Failed to submit comment:", error);
     } finally {
@@ -182,8 +220,9 @@ const Explore = () => {
                 <p className="mt-1 text-xs">Try adjusting your search or check back later.</p>
               </div>
             ) : (
-              filtered.map((post) => (
-                <article key={post.id} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-sm shadow-slate-200 backdrop-blur transition hover:-translate-y-[2px] hover:shadow-lg dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-none">
+              <>
+                {filtered.map((post) => (
+                  <article key={post.id} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-sm shadow-slate-200 backdrop-blur transition hover:-translate-y-[2px] hover:shadow-lg dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-none">
                   <div className="relative flex flex-col gap-3 p-4 sm:p-5">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
@@ -204,26 +243,15 @@ const Explore = () => {
                           <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">{post.handle}</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleLike(post.id)}
-                          className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition ${
-                            post.liked ? "bg-rose-500 text-white shadow-sm shadow-rose-400/40" : "bg-white/80 text-slate-700 hover:bg-rose-50 hover:text-rose-600 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-                          }`}
-                        >
-                          {post.liked ? "♥" : "♡"} {post.likes.toLocaleString()}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleSave(post.id)}
-                          className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition ${
-                            post.saved ? "bg-emerald-500 text-white shadow-sm shadow-emerald-400/40" : "bg-white/80 text-slate-700 hover:bg-emerald-50 hover:text-emerald-600 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-                          }`}
-                        >
-                          {post.saved ? "Saved" : "Save"}
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleSave(post.id)}
+                        className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                          post.saved ? "bg-emerald-500 text-white shadow-sm shadow-emerald-400/40" : "bg-white/80 text-slate-700 hover:bg-emerald-50 hover:text-emerald-600 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
+                        }`}
+                      >
+                        {post.saved ? "Saved" : "Save"}
+                      </button>
                     </div>
 
                     {post.imageUrl && (
@@ -238,6 +266,15 @@ const Explore = () => {
                     <div className="space-y-2">
                       <p className="text-sm text-slate-700 dark:text-slate-300 line-clamp-3">{post.caption}</p>
                       <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+                        <button
+                          type="button"
+                          onClick={() => toggleLike(post.id)}
+                          className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                            post.liked ? "bg-rose-500 text-white shadow-sm shadow-rose-400/40" : "bg-white/80 text-slate-700 hover:bg-rose-50 hover:text-rose-600 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
+                          }`}
+                        >
+                          {post.liked ? "♥" : "♡"} {post.likes.toLocaleString()}
+                        </button>
                         <button
                           type="button"
                           onClick={() => toggleComments(post.id)}
@@ -315,7 +352,17 @@ const Explore = () => {
                     )}
                   </div>
                 </article>
-              ))
+                ))}
+                {!search.trim() && (
+                  <div className="col-span-full">
+                    <ScrollPaginationSentinel
+                      onLoadMore={loadMorePosts}
+                      hasMore={hasMore}
+                      isLoading={isLoadingMore}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </section>
         </main>

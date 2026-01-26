@@ -1,7 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import type { Post, SupabaseUser, SupabasePostRow } from "@/types/api";
 import { getCurrentUser } from "./currentUser";
-import { getFollowingIds } from "@/lib/follows";
+import { getFollowingIds, getSecondLevelFollowingIds } from "@/lib/follows";
 import { hasPostAuthorData, mapSupabasePostToUi } from "./utils";
 
 /**
@@ -78,6 +78,18 @@ function mapPostsWithInteractions(
     const isFollowing = post.user_id ? followingIds.has(post.user_id) : false;
     return mapSupabasePostToUi(postWithLikedAndShared, isFollowing);
   });
+}
+
+/**
+ * Fisher-Yates shuffle algorithm for randomizing array
+ */
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }
 
 export async function fetchFeedPosts(): Promise<Post[]> {
@@ -194,22 +206,31 @@ export async function fetchFeedPosts(): Promise<Post[]> {
 
 /**
  * Fetch posts for "For You" tab
- * Returns: User's own posts + posts from users they follow
+ * Returns: Posts from users you follow + posts from users that those users follow (2nd level)
+ * Excludes: Current user's own posts
  */
-export async function fetchForYouPosts(): Promise<Post[]> {
+export async function fetchForYouPosts(limit?: number, offset?: number): Promise<Post[]> {
   const user = await getCurrentUser();
 
-  // Get list of users the current user is following
-  const followingIds = await getFollowingIds();
+  // Get list of users the current user is following (direct follows)
+  const directFollowingIds = await getFollowingIds();
   
-  // Include current user's ID in the list (so we get their own posts too)
-  const userIdsToShow = [...new Set([user.id, ...followingIds])];
+  // Get 2nd level follows (people that your follows follow)
+  const secondLevelFollowingIds = await getSecondLevelFollowingIds(directFollowingIds);
+  
+  // Combine: direct follows + 2nd level follows (exclude current user's own posts)
+  const userIdsToShow = [...new Set([...directFollowingIds, ...secondLevelFollowingIds])];
+
+  // If no users to show, return empty array
+  if (userIdsToShow.length === 0) {
+    return [];
+  }
 
   // Fetch posts from these users
   let postsData: any[] | null = null;
   let postsError: any = null;
 
-  const query = supabase
+  let query = supabase
     .from("posts")
     .select(
       `
@@ -228,10 +249,19 @@ export async function fetchForYouPosts(): Promise<Post[]> {
       likes:likes(count),
       comments:comments(count),
       shares:shares(count)
-    `
+    `,
+      { count: "exact" }
     )
     .in("user_id", userIdsToShow)
     .order("created_at", { ascending: false });
+
+  // Apply pagination if provided
+  if (limit !== undefined) {
+    query = query.limit(limit);
+  }
+  if (offset !== undefined) {
+    query = query.range(offset, offset + (limit ?? 10) - 1);
+  }
 
   const result = await query;
   postsData = result.data;
@@ -257,8 +287,8 @@ export async function fetchForYouPosts(): Promise<Post[]> {
   // Fetch user interactions
   const { likedPostIds, sharedPostIds, savedPostIds } = await fetchUserInteractions(user.id);
 
-  // Create set of following IDs
-  const followingIdsSet = new Set(followingIds);
+  // Create set of following IDs (includes both direct and 2nd level for marking)
+  const allFollowingIds = new Set([...directFollowingIds, ...secondLevelFollowingIds]);
 
   // Map posts
   return mapPostsWithInteractions(
@@ -266,7 +296,7 @@ export async function fetchForYouPosts(): Promise<Post[]> {
     likedPostIds,
     sharedPostIds,
     savedPostIds,
-    followingIdsSet
+    allFollowingIds
   );
 }
 
@@ -274,7 +304,7 @@ export async function fetchForYouPosts(): Promise<Post[]> {
  * Fetch posts for "Following" tab
  * Returns: Only posts from users the current user follows (excludes own posts)
  */
-export async function fetchFollowingPosts(): Promise<Post[]> {
+export async function fetchFollowingPosts(limit?: number, offset?: number): Promise<Post[]> {
   const user = await getCurrentUser();
 
   // Get list of users the current user is following
@@ -289,7 +319,7 @@ export async function fetchFollowingPosts(): Promise<Post[]> {
   let postsData: any[] | null = null;
   let postsError: any = null;
 
-  const query = supabase
+  let query = supabase
     .from("posts")
     .select(
       `
@@ -308,10 +338,19 @@ export async function fetchFollowingPosts(): Promise<Post[]> {
       likes:likes(count),
       comments:comments(count),
       shares:shares(count)
-    `
+    `,
+      { count: "exact" }
     )
     .in("user_id", followingIds)
     .order("created_at", { ascending: false });
+
+  // Apply pagination if provided
+  if (limit !== undefined) {
+    query = query.limit(limit);
+  }
+  if (offset !== undefined) {
+    query = query.range(offset, offset + (limit ?? 10) - 1);
+  }
 
   const result = await query;
   postsData = result.data;
@@ -355,16 +394,16 @@ export async function fetchFollowingPosts(): Promise<Post[]> {
 
 /**
  * Fetch posts for "Explore" page
- * Returns: All posts from all users (global content)
+ * Returns: All posts from all users in random order (global content)
  */
-export async function fetchExplorePosts(): Promise<Post[]> {
+export async function fetchExplorePosts(limit?: number, offset?: number): Promise<Post[]> {
   const user = await getCurrentUser();
 
-  // Fetch ALL posts (no filtering)
+  // Fetch ALL posts (no filtering, no ordering - we'll randomize after)
   let postsData: any[] | null = null;
   let postsError: any = null;
 
-  const query = supabase
+  let query = supabase
     .from("posts")
     .select(
       `
@@ -383,9 +422,14 @@ export async function fetchExplorePosts(): Promise<Post[]> {
       likes:likes(count),
       comments:comments(count),
       shares:shares(count)
-    `
-    )
-    .order("created_at", { ascending: false });
+    `,
+      { count: "exact" }
+    );
+
+  // Note: We don't order by created_at here because we want random order
+  // For pagination, we'll fetch all and then shuffle, or use a different approach
+  // For now, let's fetch all posts and shuffle them (for true randomization)
+  // If limit/offset are provided, we'll apply them after shuffling
 
   const result = await query;
   postsData = result.data;
@@ -398,13 +442,24 @@ export async function fetchExplorePosts(): Promise<Post[]> {
 
   if (!postsData) return [];
 
+  // Shuffle posts for random order
+  const shuffledPostsData = shuffleArray(postsData);
+
+  // Apply pagination after shuffling
+  let paginatedPostsData = shuffledPostsData;
+  if (limit !== undefined || offset !== undefined) {
+    const start = offset ?? 0;
+    const end = limit !== undefined ? start + limit : undefined;
+    paginatedPostsData = shuffledPostsData.slice(start, end);
+  }
+
   // Apply fallback for user data if needed
-  const needsFallback = postsData.length > 0 && postsData.some((p) => !hasPostAuthorData(p as { users?: unknown; user_id?: string }));
+  const needsFallback = paginatedPostsData.length > 0 && paginatedPostsData.some((p) => !hasPostAuthorData(p as { users?: unknown; user_id?: string }));
   if (needsFallback) {
-    const userIds = [...new Set(postsData.map((p) => p.user_id).filter(Boolean))];
+    const userIds = [...new Set(paginatedPostsData.map((p) => p.user_id).filter(Boolean))];
     if (userIds.length > 0) {
       const usersMap = await fetchUserDataFallback(userIds);
-      applyUserDataFallback(postsData, usersMap);
+      applyUserDataFallback(paginatedPostsData, usersMap);
     }
   }
 
@@ -422,11 +477,100 @@ export async function fetchExplorePosts(): Promise<Post[]> {
 
   // Map posts
   return mapPostsWithInteractions(
-    postsData as Omit<SupabasePostRow, "user_liked" | "user_shared" | "user_saved">[],
+    paginatedPostsData as Omit<SupabasePostRow, "user_liked" | "user_shared" | "user_saved">[],
     likedPostIds,
     sharedPostIds,
     savedPostIds,
     followingIds
+  );
+}
+
+/**
+ * Fetch posts for "My Feed" tab
+ * Returns: Only posts from the current user
+ */
+export async function fetchMyPosts(limit?: number, offset?: number): Promise<Post[]> {
+  const user = await getCurrentUser();
+
+  // Fetch posts only from the current user
+  let postsData: any[] | null = null;
+  let postsError: any = null;
+
+  let query = supabase
+    .from("posts")
+    .select(
+      `
+      id,
+      content,
+      image_url,
+      created_at,
+      user_id,
+      users!posts_user_id_fkey (
+        id,
+        username,
+        first_name,
+        last_name,
+        avatar_url
+      ),
+      likes:likes(count),
+      comments:comments(count),
+      shares:shares(count)
+    `,
+      { count: "exact" }
+    )
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+
+  // Apply pagination if provided
+  if (limit !== undefined) {
+    query = query.limit(limit);
+  }
+  if (offset !== undefined) {
+    query = query.range(offset, offset + (limit ?? 10) - 1);
+  }
+
+  const result = await query;
+  postsData = result.data;
+  postsError = result.error;
+
+  if (postsError) {
+    console.error("Error fetching My Feed posts:", postsError);
+    throw new Error(postsError.message);
+  }
+
+  if (!postsData) return [];
+
+  // Apply fallback for user data if needed
+  const needsFallback = postsData.length > 0 && postsData.some((p) => !hasPostAuthorData(p as { users?: unknown; user_id?: string }));
+  if (needsFallback) {
+    const { data: usersData, error: usersError } = await supabase
+      .from("users")
+      .select("id, username, first_name, last_name, avatar_url")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (!usersError && usersData) {
+      postsData.forEach((post) => {
+        if (!hasPostAuthorData(post as { users?: unknown; user_id?: string })) {
+          (post as { users?: SupabaseUser[] }).users = [usersData];
+        }
+      });
+    }
+  }
+
+  // Fetch user interactions
+  const { likedPostIds, sharedPostIds, savedPostIds } = await fetchUserInteractions(user.id);
+
+  // Current user is always following themselves (for consistency)
+  const followingIdsSet = new Set([user.id]);
+
+  // Map posts
+  return mapPostsWithInteractions(
+    postsData as Omit<SupabasePostRow, "user_liked" | "user_shared" | "user_saved">[],
+    likedPostIds,
+    sharedPostIds,
+    savedPostIds,
+    followingIdsSet
   );
 }
 

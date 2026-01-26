@@ -13,6 +13,17 @@ const FeedTabs = ({ feedFilter, onFilterChange }: FeedTabsProps) => {
       <div className="inline-flex rounded-full border border-slate-200 bg-white/80 p-1 text-xs shadow-sm shadow-slate-200 backdrop-blur dark:border-slate-800 dark:bg-slate-900/70 dark:shadow-none sm:text-sm">
         <button
           type="button"
+          onClick={() => onFilterChange("my-feed")}
+          className={`rounded-full px-3 py-1.5 font-medium transition ${
+            feedFilter === "my-feed"
+              ? "bg-slate-900 text-white shadow-sm dark:bg-white dark:text-slate-950"
+              : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+          }`}
+        >
+          My Feed
+        </button>
+        <button
+          type="button"
           onClick={() => onFilterChange("for-you")}
           className={`rounded-full px-3 py-1.5 font-medium transition ${
             feedFilter === "for-you"

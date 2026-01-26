@@ -1,4 +1,4 @@
-export type FeedFilter = 'for-you' | 'following';
+export type FeedFilter = 'for-you' | 'following' | 'my-feed';
 
 export type Post = {
   id: string;
